@@ -1,0 +1,12 @@
+services:
+  web:
+    image: MII-TFM/web
+    ports:
+      - 8080:80
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+      placement:
+        constraints: [node.role == worker]
+
