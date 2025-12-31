@@ -1,0 +1,157 @@
+networks:
+  backend:
+    driver: overlay
+    attachable: true
+
+volumes:
+  mariadb_data:
+  mariadb_init:
+  redis_data:
+services:
+  sqldb:
+    image: mariadb:latest
+    environment:
+      - "MARIADB_DATABASE=${MARIADB_DATABASE}"
+      - "MARIADB_USER=${MARIADB_USER}"
+      - "MARIADB_PASSWORD=${MARIADB_PASSWORD}"
+      - "MARIADB_ROOT_PASSWORD=${MARIADB_ROOT_PASSWORD}"
+    volumes:
+      - mariadb_init:/docker-entrypoint-initdb.d
+      - mariadb_data:/var/lib/mysql
+    networks:
+      backend:
+        aliases:
+          - mariadb
+#    ports:
+#      - '3306'
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      start_period: 30s
+      interval: 10s
+      retries: 5
+      timeout: 10s
+    deploy:
+      endpoint_mode: dnsrr #To solver VIP problem
+      replicas: 1
+      placement:
+        constraints: [node.role == worker]
+  kvmemdb:
+    image: redis:alpine
+    volumes:
+      - redis_data:/data
+    networks:
+      backend:
+        aliases:
+          - redis
+#    ports:
+#      - "6379:6379"
+    deploy:
+      endpoint_mode: dnsrr #To solver VIP problem
+      replicas: 1
+      placement:
+        constraints: [node.role == worker]
+
+  apigw:
+    image: traefik
+    command:
+      - "--api.dashboard=true" # Panel en localhost:8080
+      - "--api.insecure=true" # Panel en localhost:8080
+      - "--entrypoints.web.address=:80"
+      - "--providers.swarm=true"
+      - "--providers.docker.exposedbydefault=false" # No exponer DBs por error
+#      - "--providers.docker.network=backend"
+    networks:
+      - backend
+    ports:
+      - "8089:80" # API unificada
+      - "8090:8080" # Dashboard Traefik
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    deploy:
+      mode: global
+      placement:
+        constraints: [node.role == manager]
+
+  webapp:
+    image: 172.30.4.121:5000/mii-tfm/web:alpha1
+    networks:
+      - backend
+#    ports:
+#      - "8080:80"
+    deploy:
+      replicas: 3
+      placement:
+        constraints: [node.role == worker]
+      labels:
+        - "traefik.enable=true"
+        - "traefik.http.routers.web.rule=PathPrefix(`/`)"
+        - "traefik.http.services.web.loadbalancer.server.port=80"
+
+  api-game-score:
+    image: 172.30.4.121:5000/mii-tfm/game-score:alpha1
+    networks:
+      - backend
+    environment:
+      - "SPRING_DATA_REDIS_HOST=redis"
+      - "SPRING_DATA_REDIS_PORT=6379"
+      - "SPRING_DATASOURCE_URL=${SPRING_DATASOURCE_URL_SCORES}"
+      - "SPRING_DATASOURCE_USERNAME=${SPRING_DATASOURCE_USERNAME_SCORES}"
+      - "SPRING_DATASOURCE_PASSWORD=${SPRING_DATASOURCE_PASSWORD_SCORES}"
+#    ports:
+#      - "8081:8080"
+#    restart: on-failure:5
+    depends_on:
+      - mariadb
+      - redis
+#      mariadb:
+#        condition: service_healthy
+#      redis:
+#        condition: service_started
+    deploy:
+      replicas: 3
+#      placement:
+#        constraints: [node.role == worker]
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 3
+        window: 120s
+      labels:
+        - "traefik.enable=true"
+        - "traefik.http.routers.score.rule=PathPrefix(`/api/scores`)"
+        - "traefik.http.services.score.loadbalancer.server.port=8080"
+
+  api-user-auth:
+    image: 172.30.4.121:5000/mii-tfm/user-auth:alpha1
+    networks:
+      - backend
+    environment:
+      - "SPRING_DATA_REDIS_HOST=redis"
+      - "SPRING_DATA_REDIS_PORT=6379"
+      - "SPRING_DATASOURCE_URL=${SPRING_DATASOURCE_URL_USERS}"
+      - "SPRING_DATASOURCE_USERNAME=${SPRING_DATASOURCE_USERNAME_USERS}"
+      - "SPRING_DATASOURCE_PASSWORD=${SPRING_DATASOURCE_PASSWORD_USERS}"
+#    ports:
+#      - "8082:8080"
+#    restart: on-failure:5
+    depends_on:
+      - mariadb
+      - redis
+#      mariadb: 
+#        condition: service_healthy
+#      redis:
+#        condition: service_started
+    deploy:
+      replicas: 2
+      placement:
+        constraints: [node.role == worker]
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 3
+        window: 120s
+      labels:
+        - "traefik.enable=true"
+        - "traefik.http.routers.auth.rule=PathPrefix(`/api/auth`)"
+        - "traefik.http.services.auth.loadbalancer.server.port=8080"
+

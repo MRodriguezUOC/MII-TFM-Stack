@@ -1,0 +1,101 @@
+services:
+  mariadb:
+    image: mariadb:latest
+    environment:
+      - "MARIADB_DATABASE=${MARIADB_DATABASE}"
+      - "MARIADB_USER=${MARIADB_USER}"
+      - "MARIADB_PASSWORD=${MARIADB_PASSWORD}"
+      - "MARIADB_ROOT_PASSWORD=${MARIADB_ROOT_PASSWORD}"
+    volumes:
+      - ../backend/db:/docker-entrypoint-initdb.d
+    ports:
+      - "3306"
+    healthcheck:
+      #https://mariadb.com/docs/server/server-management/automated-mariadb-deployment-and-administration/docker-and-mariadb/using-healthcheck-sh
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      start_period: 30s
+      interval: 10s
+      retries: 5
+      timeout: 10s
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379"
+  traefik:
+    image: traefik
+    command:
+      - "--api.insecure=true" # Panel en localhost:8080
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false" # No exponer DBs por error
+      - "--entrypoints.web.address=:80"
+    ports:
+      - "8080:80" # API unificada
+      - "8089:8080" # Dashboard Traefik
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+  app:
+    build:
+      context: ../web
+      dockerfile: Dockerfile.dev
+      args:
+        NODE_VERSION: ${NODE_VERSION}
+    image: mii-tfm/web-dev
+    ports:
+      - "4201:4200"
+    develop:
+      watch:
+        - action: sync
+          path: web/
+          target: /app
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.web.rule=PathPrefix(`/`)"
+
+  game-score:
+    build:
+      context: ../backend
+      dockerfile: game-score/Dockerfile
+    image: mii-tfm/game-score
+    environment:
+      - "SPRING_DATA_REDIS_HOST=redis"
+      - "SPRING_DATA_REDIS_PORT=6379"
+      - "SPRING_DATASOURCE_URL=${SPRING_DATASOURCE_URL_SCORES}"
+      - "SPRING_DATASOURCE_USERNAME=${SPRING_DATASOURCE_USERNAME_SCORES}"
+      - "SPRING_DATASOURCE_PASSWORD=${SPRING_DATASOURCE_PASSWORD_SCORES}"
+    ports:
+      - "8081:8080"
+    depends_on:
+      mariadb: 
+        condition: service_healthy
+        restart: true
+      redis:
+        condition: service_started
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.score.rule=PathPrefix(`/api/scores`)"
+#      - "traefik.http.services.score.loadbalancer.server.port=8081"
+
+  user-auth:
+    build:
+      context: ../backend
+      dockerfile: user-auth/Dockerfile
+    image: mii-tfm/user-auth
+    environment:
+      - "SPRING_DATA_REDIS_HOST=redis"
+      - "SPRING_DATA_REDIS_PORT=6379"
+      - "SPRING_DATASOURCE_URL=${SPRING_DATASOURCE_URL_USERS}"
+      - "SPRING_DATASOURCE_USERNAME=${SPRING_DATASOURCE_USERNAME_USERS}"
+      - "SPRING_DATASOURCE_PASSWORD=${SPRING_DATASOURCE_PASSWORD_USERS}"
+    ports:
+      - "8082:8080"
+    depends_on:
+      mariadb: 
+        condition: service_healthy
+        restart: true
+      redis:
+        condition: service_started
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.auth.rule=PathPrefix(`/api/auth`)"
+#      - "traefik.http.services.auth.loadbalancer.server.port=8082"
